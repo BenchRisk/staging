@@ -403,21 +403,25 @@ def extract_json(content):
         return json.loads(s)
     except json.JSONDecodeError:
         pass
-    start = s.find("{")
-    if start < 0:
-        return None
+    # Scan balanced top-level {...} objects and return the LAST one that parses —
+    # reasoning models emit their final answer after their thinking, so the verdict
+    # object is typically the last JSON in the text.
+    last = None
     depth = 0
-    for i in range(start, len(s)):
-        if s[i] == "{":
+    start = -1
+    for i, ch in enumerate(s):
+        if ch == "{":
+            if depth == 0:
+                start = i
             depth += 1
-        elif s[i] == "}":
+        elif ch == "}" and depth > 0:
             depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(s[start:i + 1])
+                    last = json.loads(s[start:i + 1])
                 except json.JSONDecodeError:
-                    return None
-    return None
+                    pass
+    return last
 
 
 class LlmLogger:
@@ -517,9 +521,16 @@ def call_openrouter(base_url: str, api_key: str, model: str, prompt: str,
                 return None, f"API error: {payload['error']}"
             log("ok", attempt, payload=payload)
             try:
-                content = payload["choices"][0]["message"]["content"]
+                message = payload["choices"][0]["message"] or {}
             except (KeyError, IndexError, TypeError) as e:
                 return None, f"unexpected response shape: {e}"
+            if not isinstance(message, dict):
+                return None, "unexpected response shape: message is not an object"
+            content = message.get("content")
+            if not (content and content.strip()):
+                # Reasoning models can leave `content` null and emit their output in a
+                # reasoning field instead; fall back to it so they work out of the box.
+                content = message.get("reasoning") or message.get("reasoning_content")
             return content, None
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")
