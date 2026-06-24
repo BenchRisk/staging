@@ -733,8 +733,8 @@ def main() -> int:
         print("--no-write: score file not modified.")
         return 1 if n_err else 0
 
-    new_fm = set_block_list(fm, ADOPTED_FIELD, adopted)
-    new_fm = set_block_list(new_fm, ABSENT_FIELD, absent)
+    new_fm = set_block_list(fm, ADOPTED_FIELD, sorted(adopted))
+    new_fm = set_block_list(new_fm, ABSENT_FIELD, sorted(absent))
     # Record provenance: a machine run produces machine annotations unless told otherwise.
     new_fm, n_sb = re.subn(r"(?m)^scoredBy:.*$", f"scoredBy: {args.scored_by}", new_fm)
     if n_sb == 0:  # field absent — add it right after name:
