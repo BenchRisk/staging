@@ -10,10 +10,18 @@ Pipeline:
      `absentMitigations` lists accordingly.
 
 The "documents" handed to the model are assembled from the score file itself — its
-`benchmarkDescription`, `reference`, and markdown body — i.e., what the repo knows about
+`benchmarkDescription`, `references`, and markdown body — i.e., what the repo knows about
 the benchmark. The existing mitigation lists are deliberately NOT included, so prior
 scoring cannot bias the model. Use --documents-file to grade against external material
 (e.g., the benchmark's paper/README) instead.
+
+With --fetch-references the reference URLs are retrieved and their full text appended to
+the documents: arXiv /abs/ links are fetched as PDFs and extracted to full text; other
+pages are fetched and reduced to readable text. Retrievals are cached on disk (default
+<repo>/.cache/references) and are not re-fetched while present (use --refresh-cache to
+force; failures are never cached). PDF text extraction prefers PyMuPDF, then pdfminer.six,
+then pypdf — install one into a local venv, e.g.
+`uv venv .venv && uv pip install --python .venv/bin/python -r seeding/requirements.txt`.
 
 Verdict -> list mapping (default):
     adopted               -> adoptedMitigations
@@ -43,6 +51,10 @@ Examples:
     python seeding/score_benchmark.py --score data/scores/HumanEval.mdx \
         --mitigations 1-20 --model openai/gpt-4o --no-write
 
+    # Fetch & cache the full reference texts (arXiv PDF, MLCommons page), then dry-run
+    python seeding/score_benchmark.py --score AILuminate10 --mitigations 1 \
+        --fetch-references --dry-run
+
 No third-party packages required (standard library only).
 """
 
@@ -50,6 +62,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import hashlib
+import io
 import json
 import os
 import re
@@ -59,6 +73,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +82,8 @@ RUBRIC_DIR = REPO_ROOT / "data" / "langfuse" / "mitigations_rubrics"
 ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_MODEL = "anthropic/claude-sonnet-4.5"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_CACHE_DIR = REPO_ROOT / ".cache" / "references"
+FETCH_USER_AGENT = "BenchRisk-reference-fetcher/1.0 (+https://github.com/BenchRisk/BenchRisk)"
 
 MIT_FILE_RE = re.compile(r"^mitigation\.(\d+)\.prompt\.md$")
 ADOPTED_FIELD = "adoptedMitigations"
@@ -144,6 +161,27 @@ def get_list(fm: str, field: str) -> list[int]:
     return vals
 
 
+def get_str_list(fm: str, field: str) -> list[str]:
+    """Read a top-level block (or inline) list of string values from the frontmatter."""
+    lines = fm.split("\n")
+    i, n, vals = 0, len(lines), []
+    while i < n:
+        if re.match(rf"^{re.escape(field)}:\s*(.*)$", lines[i]):
+            inline = re.match(rf"^{re.escape(field)}:\s*\[(.*)\]\s*$", lines[i])
+            if inline:
+                return [x.strip().strip("'").strip('"')
+                        for x in inline.group(1).split(",") if x.strip()]
+            i += 1
+            while i < n and not re.match(r"^[A-Za-z0-9_]+\s*:", lines[i]):
+                mm = re.match(r"^\s*-\s*(.*)$", lines[i])
+                if mm and mm.group(1).strip():
+                    vals.append(mm.group(1).strip().strip("'").strip('"'))
+                i += 1
+            return vals
+        i += 1
+    return vals
+
+
 def set_block_list(fm: str, field: str, values: list[int]) -> str:
     """Replace a top-level block-list field's values, leaving all other text intact."""
     lines = fm.split("\n")
@@ -189,12 +227,12 @@ def available_mitigations() -> list[int]:
 
 def assemble_documents(name: str, fm: str, body: str) -> str:
     desc = get_scalar(fm, "benchmarkDescription")
-    ref = get_scalar(fm, "reference")
+    refs = get_str_list(fm, "references")
     parts = [f"# Benchmark: {name}", ""]
     if desc:
         parts += ["## Description", desc, ""]
-    if ref:
-        parts += ["## Reference", ref, ""]
+    if refs:
+        parts += ["## References", "\n".join(f"- {r}" for r in refs), ""]
     if body.strip():
         parts += ["## Documentation", body.strip(), ""]
     return "\n".join(parts).strip() + "\n"
@@ -206,6 +244,149 @@ def compile_prompt(shared: str, mitigation: str, benchmark_name: str, documents:
     out = out.replace("{{benchmark_name}}", benchmark_name)
     out = out.replace("{{documents}}", documents)
     return out
+
+
+# --------------------------------------------------------------------------- references
+class _HTMLTextExtractor(HTMLParser):
+    """Collect visible text from an HTML page, skipping script/style/etc."""
+
+    _SKIP = {"script", "style", "noscript", "svg", "head"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if not self._skip:
+            t = data.strip()
+            if t:
+                self.parts.append(t)
+
+
+def html_to_text(html_str: str) -> str:
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(html_str)
+    except Exception:  # noqa: BLE001 - tolerate malformed markup
+        pass
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(parser.parts)).strip()
+
+
+def extract_pdf_text(data: bytes) -> str:
+    """Full-text extraction, preferring PyMuPDF, then pdfminer.six, then pypdf."""
+    try:
+        import pymupdf  # PyMuPDF >= 1.24
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        try:
+            return "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+    except ImportError:
+        pass
+    try:
+        import fitz  # older PyMuPDF import name
+        doc = fitz.open(stream=data, filetype="pdf")
+        try:
+            return "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+    except ImportError:
+        pass
+    try:
+        from pdfminer.high_level import extract_text
+        return extract_text(io.BytesIO(data))
+    except ImportError:
+        pass
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except ImportError:
+        pass
+    raise RuntimeError(
+        "no PDF backend available — install one into your environment, e.g. "
+        "`uv pip install --python .venv/bin/python pymupdf`")
+
+
+def normalize_fetch_url(url: str) -> str:
+    """Map an arXiv abstract page to its PDF so we retrieve full text."""
+    m = re.match(r"^(https?://arxiv\.org)/abs/(.+)$", url.strip())
+    if m:
+        return f"{m.group(1)}/pdf/{m.group(2)}"
+    return url.strip()
+
+
+def fetch_url(url: str, timeout: int = 60):
+    """Return (kind, text) for a URL; kind is one of {'pdf', 'html', 'text'}."""
+    target = normalize_fetch_url(url)
+    req = urllib.request.Request(
+        target, headers={"User-Agent": FETCH_USER_AGENT, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        raw = resp.read()
+    if "application/pdf" in ctype or target.lower().endswith(".pdf") or raw[:5] == b"%PDF-":
+        return "pdf", extract_pdf_text(raw)
+    if "html" in ctype or raw.lstrip()[:1] == b"<":
+        return "html", html_to_text(raw.decode("utf-8", "replace"))
+    return "text", raw.decode("utf-8", "replace")
+
+
+def fetch_references(refs, cache_dir: Path, timeout: int = 60, refresh: bool = False):
+    """Fetch each reference URL, caching successful extractions on disk.
+
+    A reference already present in the cache is NOT re-fetched (unless refresh=True).
+    Failures are not cached, so they are retried on the next run. Returns result dicts.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for url in refs:
+        key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        txt_path = cache_dir / f"{key}.txt"
+        meta_path = cache_dir / f"{key}.json"
+        if not refresh and txt_path.exists():
+            text = txt_path.read_text(encoding="utf-8")
+            print(f"  CACHED  {url}  ({len(text)} chars)")
+            results.append({"url": url, "status": "cached", "text": text})
+            continue
+        try:
+            kind, text = fetch_url(url, timeout=timeout)
+            text = text.strip()
+            txt_path.write_text(text, encoding="utf-8")
+            meta_path.write_text(json.dumps(
+                {"url": url, "kind": kind, "chars": len(text),
+                 "fetched_at": datetime.now(timezone.utc).isoformat()},
+                indent=2), encoding="utf-8")
+            print(f"  FETCHED {url}  [{kind}, {len(text)} chars]")
+            results.append({"url": url, "status": "fetched", "kind": kind, "text": text})
+        except Exception as e:  # noqa: BLE001 - report and continue with other refs
+            print(f"  FAILED  {url}  ({e})")
+            results.append({"url": url, "status": "failed", "error": str(e), "text": ""})
+    return results
+
+
+def render_fetched_section(fetched, max_chars: int = 0) -> str:
+    """Append fetched reference texts to the documents (optionally truncated each)."""
+    out = ["", "## Fetched reference contents", ""]
+    for r in fetched:
+        if r["status"] == "failed":
+            out += [f"### Source: {r['url']}",
+                    f"(could not retrieve: {r.get('error', '')})", ""]
+            continue
+        text = r["text"]
+        note = ""
+        if max_chars and len(text) > max_chars:
+            text, note = text[:max_chars], f" (truncated to {max_chars} chars)"
+        out += [f"### Source: {r['url']}{note}", text, ""]
+    return "\n".join(out)
 
 
 # --------------------------------------------------------------------------- openrouter
@@ -394,6 +575,17 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=4, help="concurrent requests")
     ap.add_argument("--documents-file", default=None,
                     help="use this file's contents as the documents instead of the score file")
+    ap.add_argument("--fetch-references", action="store_true",
+                    help="fetch each reference URL (arXiv PDFs -> full text, pages -> text) "
+                         "and append it to the documents")
+    ap.add_argument("--cache-dir", default=None,
+                    help=f"reference fetch cache directory (default: {DEFAULT_CACHE_DIR})")
+    ap.add_argument("--refresh-cache", action="store_true",
+                    help="re-fetch references even if already cached")
+    ap.add_argument("--fetch-timeout", type=int, default=60,
+                    help="per-URL fetch timeout in seconds (default 60)")
+    ap.add_argument("--max-ref-chars", type=int, default=0,
+                    help="truncate each fetched reference to N chars (0 = full text)")
     ap.add_argument("--update-date", action="store_true",
                     help="set dateScored to today when the file is written")
     ap.add_argument("--api-key", default=None, help="env OPENROUTER_API_KEY")
@@ -414,6 +606,7 @@ def main() -> int:
     base_url = args.base_url or os.environ.get("OPENROUTER_BASE_URL") or DEFAULT_BASE_URL
     api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
     log_path = Path(args.log_file) if args.log_file else REPO_ROOT / "llm.log"
+    cache_dir = Path(args.cache_dir) if args.cache_dir else DEFAULT_CACHE_DIR
 
     score_path = resolve_score_path(args.score)
     raw = score_path.read_text(encoding="utf-8")
@@ -429,6 +622,13 @@ def main() -> int:
         documents = Path(args.documents_file).read_text(encoding="utf-8")
     else:
         documents = assemble_documents(name, fm, body)
+        if args.fetch_references:
+            refs = get_str_list(fm, "references")
+            print(f"Fetching {len(refs)} reference(s) into {cache_dir} ...")
+            fetched = fetch_references(refs, cache_dir, timeout=args.fetch_timeout,
+                                       refresh=args.refresh_cache)
+            documents += render_fetched_section(fetched, args.max_ref_chars)
+            print("-" * 78)
 
     requested = parse_mitigation_spec(args.mitigations) if args.mitigations else available_mitigations()
     targets = []

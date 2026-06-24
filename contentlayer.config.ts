@@ -201,7 +201,7 @@ export const Scores = defineDocumentType(() => ({
     adoptedMitigations: { type: 'list', of: { type: 'number' }, required: false },
     absentMitigations: { type: 'list', of: { type: 'number' }, required: false },
     benchmarkDescription: { type: 'string', required: true },
-    reference: { type: 'markdown', required: true },
+    references: { type: 'list', of: { type: 'string' }, required: true },
     dateScored: { type: 'date', required: true },
     hide: { type: 'boolean', required: false, default: false },
   },

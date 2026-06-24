@@ -64,7 +64,7 @@ function renderMitigations(mitigations, failureModeMap, mitigationMap) {
 export default function Drawer({
   title,
   contents,
-  reference,
+  references = [],
   service = false,
   mitigations = [],
   failureModeMap = [],
@@ -118,10 +118,19 @@ export default function Drawer({
                             <div className="text-white [&_blockquote]:text-gray-400">
                               {MDXContent}
                             </div>
-                            {reference && (
+                            {references.length > 0 && (
                               <>
                                 Find more information about the benchmark at its{' '}
-                                <Link href={reference}>definitive source</Link>{' '}
+                                {references.length === 1
+                                  ? 'definitive source'
+                                  : 'definitive sources'}
+                                :{' '}
+                                {references.map((ref, i) => (
+                                  <span key={ref}>
+                                    {i > 0 && ', '}
+                                    <Link href={ref}>{ref}</Link>
+                                  </span>
+                                ))}{' '}
                               </>
                             )}
                           </div>

@@ -49,7 +49,7 @@ function scoreFindings(
   correctnessScore,
   longevityScore,
   benchmarkDescription,
-  reference
+  references = []
 ) {
   const highThreshold = 0.7
   const lowThreshold = 0.5
@@ -62,13 +62,19 @@ function scoreFindings(
     <>
       <span className="italic">{benchmarkDescription}</span>
       <div className="prose max-w-none text-gray-500 dark:text-gray-400">
-        Refer to the original reference for{' '}
-        <Link
-          href={reference.raw}
-          className="text-base font-medium leading-6 text-primary-500 hover:text-primary-600 dark:hover:text-primary-400"
-        >
-          more details about the benchmark
-        </Link>
+        Refer to the original {references.length === 1 ? 'reference' : 'references'} for more
+        details about the benchmark:{' '}
+        {references.map((ref, i) => (
+          <span key={ref}>
+            {i > 0 && ', '}
+            <Link
+              href={ref}
+              className="text-base font-medium leading-6 text-primary-500 hover:text-primary-600 dark:hover:text-primary-400"
+            >
+              {ref}
+            </Link>
+          </span>
+        ))}
       </div>
       <br />
       The benchmark presents a...
@@ -186,7 +192,7 @@ export default function ScoreLayout({ scores, mitigationMap, failureModeMap }) {
       ' ' +
       score.benchmarkDescription +
       ' ' +
-      score.reference +
+      (score.references ?? []).join(' ') +
       ' ' +
       score.dateScored.toString()
     if (score.hide) return false // Skip hidden scores
@@ -317,7 +323,7 @@ export default function ScoreLayout({ scores, mitigationMap, failureModeMap }) {
               correctnessScore,
               longevityScore,
               benchmarkDescription,
-              reference,
+              references,
               body,
             } = score
             return (
@@ -345,7 +351,7 @@ export default function ScoreLayout({ scores, mitigationMap, failureModeMap }) {
                         <Drawer
                           title={`${name}`}
                           contents={body}
-                          reference={reference.raw}
+                          references={references}
                           mitigations={adoptedMitigations}
                           failureModeMap={failureModeMap}
                           mitigationMap={mitigationMap}
@@ -359,7 +365,7 @@ export default function ScoreLayout({ scores, mitigationMap, failureModeMap }) {
                           correctnessScore,
                           longevityScore,
                           benchmarkDescription,
-                          reference
+                          references
                         )}
                         Numerically, this is supported by the following scores:
                       </div>
