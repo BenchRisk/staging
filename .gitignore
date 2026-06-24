@@ -61,3 +61,6 @@ env/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# local caches
+.cache/
