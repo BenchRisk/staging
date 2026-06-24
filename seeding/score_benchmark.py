@@ -39,6 +39,7 @@ inspect exactly what the hosted model did. (llm.log matches *.log in .gitignore.
 
 Configuration (env, also read from the repo .env if present and not already set):
     OPENROUTER_API_KEY   (required unless --dry-run)
+    OPENROUTER_MODEL     (optional; default model id, overridden by --model)
     OPENROUTER_BASE_URL  (optional; default https://openrouter.ai/api/v1)
 
 Examples:
@@ -391,7 +392,9 @@ def render_fetched_section(fetched, max_chars: int = 0) -> str:
 
 
 # --------------------------------------------------------------------------- openrouter
-def extract_json(content: str):
+def extract_json(content):
+    if not content:
+        return None
     s = content.strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\n", "", s)
@@ -563,8 +566,9 @@ def main() -> int:
                     help="score file name (e.g. MMLU) or path under data/scores/")
     ap.add_argument("--mitigations", default=None,
                     help="comma list / ranges, e.g. '1,2,57' or '1-20,57'. Default: all")
-    ap.add_argument("--model", default=DEFAULT_MODEL,
-                    help=f"OpenRouter model id (default: {DEFAULT_MODEL})")
+    ap.add_argument("--model", default=None,
+                    help="OpenRouter model id; overrides $OPENROUTER_MODEL "
+                         f"(default: {DEFAULT_MODEL})")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-tokens", type=int, default=2000)
     ap.add_argument("--json-mode", action="store_true",
@@ -609,6 +613,7 @@ def main() -> int:
     load_dotenv(ENV_FILE)
     base_url = args.base_url or os.environ.get("OPENROUTER_BASE_URL") or DEFAULT_BASE_URL
     api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
+    model = args.model or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL
     log_path = Path(args.log_file) if args.log_file else REPO_ROOT / "llm.log"
     cache_dir = Path(args.cache_dir) if args.cache_dir else DEFAULT_CACHE_DIR
 
@@ -645,7 +650,7 @@ def main() -> int:
             missing.append(num)
 
     print(f"Benchmark   : {name}  ({score_path.relative_to(REPO_ROOT)})")
-    print(f"Model       : {args.model}")
+    print(f"Model       : {model}")
     print(f"Mitigations : {len(targets)} to assess" +
           (f"  (missing rubric files: {missing})" if missing else ""))
     print(f"Documents   : {len(documents)} chars"
@@ -671,7 +676,7 @@ def main() -> int:
         sys.exit("Missing OPENROUTER_API_KEY (env, .env, or --api-key).")
 
     logger = LlmLogger(log_path, enabled=not args.no_log, log_requests=args.log_requests)
-    logger.session(benchmark=name, model=args.model, mitigations=len(targets),
+    logger.session(benchmark=name, model=model, mitigations=len(targets),
                    score_file=str(score_path.relative_to(REPO_ROOT)),
                    base_url=base_url, temperature=args.temperature)
 
@@ -679,12 +684,14 @@ def main() -> int:
         num, p = item
         mitigation = strip_comments(p.read_text(encoding="utf-8"))
         prompt = compile_prompt(shared, mitigation, name, documents)
-        content, err = call_openrouter(base_url, api_key, args.model, prompt,
+        content, err = call_openrouter(base_url, api_key, model, prompt,
                                         args.temperature, args.max_tokens, args.json_mode,
                                         logger=logger, benchmark=name, mitigation=num)
         if err:
             return num, None, err
-        return num, extract_json(content), (None if content else "empty response")
+        if not content or not content.strip():
+            return num, None, "empty response (model returned no content; see llm.log)"
+        return num, extract_json(content), None
 
     results: dict[int, dict | None] = {}
     errors: dict[int, str] = {}
