@@ -198,6 +198,16 @@ export const Scores = defineDocumentType(() => ({
   contentType: 'mdx',
   fields: {
     name: { type: 'string', required: true },
+    // Who is taking responsibility for this score's mitigation values:
+    //   machine    — a machine annotation without full human review
+    //   human      — a human is taking responsibility for the values
+    //   maintainer — a maintainer of the benchmark is taking responsibility for the values
+    scoredBy: {
+      type: 'enum',
+      options: ['machine', 'human', 'maintainer'],
+      default: 'machine',
+      required: false,
+    },
     adoptedMitigations: { type: 'list', of: { type: 'number' }, required: false },
     absentMitigations: { type: 'list', of: { type: 'number' }, required: false },
     benchmarkDescription: { type: 'string', required: true },
