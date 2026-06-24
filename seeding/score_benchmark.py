@@ -6,8 +6,8 @@ Pipeline:
   2. Loop through the mitigation rubric prompts in data/langfuse/mitigations_rubrics/.
   3. Compose each rubric (shared Component 1 + mitigation Component 2) with the
      benchmark's name and documents, and send it to a model via OpenRouter.
-  4. Parse each verdict and update the score file's `adoptedMitigations` /
-     `absentMitigations` lists accordingly.
+  4. Parse each verdict, update the score file's `adoptedMitigations` /
+     `absentMitigations` lists, and set `dateScored` to today (use --keep-date to skip).
 
 The "documents" handed to the model are assembled from the score file itself — its
 `benchmarkDescription`, `references`, and markdown body — i.e., what the repo knows about
@@ -586,8 +586,8 @@ def main() -> int:
                     help="per-URL fetch timeout in seconds (default 60)")
     ap.add_argument("--max-ref-chars", type=int, default=0,
                     help="truncate each fetched reference to N chars (0 = full text)")
-    ap.add_argument("--update-date", action="store_true",
-                    help="set dateScored to today when the file is written")
+    ap.add_argument("--keep-date", action="store_true",
+                    help="leave dateScored unchanged (by default it is set to today on write)")
     ap.add_argument("--api-key", default=None, help="env OPENROUTER_API_KEY")
     ap.add_argument("--base-url", default=None, help="env OPENROUTER_BASE_URL")
     ap.add_argument("--log-file", default=None,
@@ -731,11 +731,17 @@ def main() -> int:
 
     new_fm = set_block_list(fm, ADOPTED_FIELD, adopted)
     new_fm = set_block_list(new_fm, ABSENT_FIELD, absent)
-    if args.update_date:
-        new_fm = re.sub(r"(?m)^dateScored:.*$", f"dateScored: '{date.today().isoformat()}'", new_fm)
+    date_note = ""
+    if not args.keep_date:
+        today = date.today().isoformat()
+        new_fm, n_sub = re.subn(r"(?m)^dateScored:.*$", f"dateScored: '{today}'", new_fm)
+        if n_sub == 0:  # field absent for some reason — add it
+            new_fm = new_fm.rstrip("\n") + f"\ndateScored: '{today}'"
+        date_note = f"; dateScored set to {today}"
     score_path.write_text(f"---\n{new_fm}\n---\n{body}", encoding="utf-8")
     print(f"Updated {score_path.relative_to(REPO_ROOT)} "
-          f"({changed} mitigations placed; adopted list={len(adopted)}, absent list={len(absent)}).")
+          f"({changed} mitigations placed; adopted list={len(adopted)}, "
+          f"absent list={len(absent)}{date_note}).")
     return 1 if n_err else 0
 
 
