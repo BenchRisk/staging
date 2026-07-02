@@ -1,5 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
+# editors
+*~
+
 # dependencies
 /node_modules
 /.pnp
@@ -46,3 +49,18 @@ yarn-error.log*
 
 # Contentlayer
 .contentlayer
+
+# Python (seeding/ scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# local caches
+.cache/

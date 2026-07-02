@@ -41,11 +41,13 @@ for score_file in score_files:
         #absentMitigations = list(map(lambda x: "mitigations/" + str(x) + ".mdx", absentMitigations))
         data = {
             "name": name,
+            # machine | human | maintainer (see contentlayer Scores schema)
+            "scoredBy": "human",
             "adoptedMitigations": adoptedMitigations,
             "absentMitigations": absentMitigations,
             "benchmarkDescription": "todo",
             "dateScored": "2025-04-01",
-            "reference": "todo",
+            "references": ["todo"],
         }
 
         # Write the MDX file

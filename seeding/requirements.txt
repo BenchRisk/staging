@@ -1,0 +1,18 @@
+# Dependencies for the BenchRisk seeding / scoring scripts.
+#
+# Recommended: install into a local virtual environment (kept out of git via .gitignore):
+#   uv venv .venv
+#   uv pip install --python .venv/bin/python -r seeding/requirements.txt
+#   .venv/bin/python seeding/score_benchmark.py --help
+#
+# pyyaml / requests are used by the data-seeding scripts (scores.py, mitigations.py, ...).
+# pymupdf powers --fetch-references full-text PDF extraction in score_benchmark.py.
+# (score_benchmark.py and langfuse_prompts.py are otherwise standard-library only.)
+
+pymupdf>=1.24
+pyyaml>=6.0
+requests>=2.31
+
+# Optional alternative PDF backends — auto-detected if installed instead of pymupdf:
+# pdfminer.six>=20221105
+# pypdf>=4.0
